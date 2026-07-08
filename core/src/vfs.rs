@@ -251,6 +251,18 @@ mod tests {
     }
 
     #[test]
+    fn exfat_reports_exfat_kind() {
+        let img = include_bytes!("../../tests/data/exfat.img").to_vec();
+        let fs = FatFs::open(Cursor::new(img)).unwrap();
+        let vfs: &dyn FileSystem = &fs;
+        assert_eq!(vfs.kind(), FsKind::ExFat);
+        let id = vfs.lookup(vfs.root(), b"HELLO.TXT").unwrap().unwrap();
+        let mut buf = vec![0u8; 17];
+        let n = vfs.read_at(id, StreamId::Default, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"hello from exFAT\n");
+    }
+
+    #[test]
     fn root_lists_known_entries() {
         let fs = open();
         let vfs: &dyn FileSystem = &fs;

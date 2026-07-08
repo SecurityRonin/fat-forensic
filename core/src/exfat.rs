@@ -102,8 +102,9 @@ fn decode_set(slots: &[&[u8]], i: usize, secondary_count: usize, file: &[u8]) ->
                 size = le_u64(s, 24);
             }
             TYPE_FILE_NAME => {
+                // FileName field is offset 2..32 (15 UTF-16LE units) per [MS] §7.7.
                 for k in 0..15 {
-                    units.push(le_u16(s, 1 + k * 2));
+                    units.push(le_u16(s, 2 + k * 2));
                 }
             }
             _ => {}
@@ -253,8 +254,9 @@ mod tests {
     fn file_name(deleted: bool, chars: &[u16]) -> [u8; 32] {
         let mut e = [0u8; 32];
         e[0] = if deleted { 0x41 } else { 0xC1 };
+        // FileName field starts at offset 2 ([MS] §7.7).
         for (i, &c) in chars.iter().take(15).enumerate() {
-            e[1 + i * 2..3 + i * 2].copy_from_slice(&c.to_le_bytes());
+            e[2 + i * 2..4 + i * 2].copy_from_slice(&c.to_le_bytes());
         }
         e
     }

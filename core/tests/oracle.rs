@@ -78,6 +78,17 @@ fn fat16_matches_tsk() {
 }
 
 #[test]
+fn exfat_matches_tsk() {
+    assert_known_files(
+        include_bytes!("../../tests/data/exfat.img"),
+        b"hello from exFAT\n",
+        "LongFileName_exfat.txt",
+        b"this exFAT file has a long name stored in File Name entries\n",
+        b"nested exfat content\n",
+    );
+}
+
+#[test]
 fn fat32_matches_tsk() {
     let Ok(path) = std::env::var("FAT_FORENSIC_FAT32_IMG") else {
         eprintln!("skipping: FAT_FORENSIC_FAT32_IMG unset (regenerate via tests/data/mint.sh)");
