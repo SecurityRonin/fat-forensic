@@ -10,9 +10,9 @@ use std::path::Path;
 use fat::{FatFs, FileId};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect(); // cov:unreachable: shell
-    let code = run_args(&args, &mut std::io::stdout()); // cov:unreachable: shell
-    std::process::exit(code); // cov:unreachable: shell
+    let args: Vec<String> = std::env::args().collect();
+    let code = run_args(&args, &mut std::io::stdout());
+    std::process::exit(code);
 }
 
 /// Parse `args` and dispatch, writing all output to `out`. Returns the process

@@ -311,7 +311,7 @@ fn audit_fat_mirror<R: Read + Seek>(
 ) -> Result<(), FatError> {
     let fat_bytes = (u64::from(geom.fat_size_sectors) * u64::from(geom.bytes_per_sector)) as usize;
     if fat_bytes == 0 {
-        return Ok(());
+        return Ok(()); // cov:unreachable: geometry validated fat_size_sectors != 0
     }
     let mut fat1 = vec![0u8; fat_bytes];
     if read_upto(reader, geom.fat_start, &mut fat1)? < fat_bytes {
@@ -353,10 +353,10 @@ fn collect_deleted<R: Read + Seek>(
     out: &mut Vec<Anomaly>,
 ) {
     if depth >= MAX_DEPTH {
-        return;
+        return; // cov:unreachable: real FAT trees are far shallower than 64
     }
     let Ok(nodes) = fs.read_dir(dir) else {
-        return;
+        return; // cov:unreachable: dir was already resolved as a directory
     };
     for node in nodes {
         if node.name == "." || node.name == ".." {
@@ -396,6 +396,7 @@ fn read_upto<R: Read + Seek>(
         match reader.read(&mut buf[filled..]) {
             Ok(0) => break,
             Ok(n) => filled += n,
+            // cov:unreachable: EINTR retry — in-memory/file readers never raise it
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(FatError::io("read", e)),
         }

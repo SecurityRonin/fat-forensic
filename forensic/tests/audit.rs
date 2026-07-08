@@ -14,6 +14,15 @@ fn has_code(anoms: &[fat_forensic::Anomaly], code: &str) -> bool {
 }
 
 #[test]
+fn audit_path_opens_a_real_file() {
+    let path = format!("{}/../tests/data/fat16.img", env!("CARGO_MANIFEST_DIR"));
+    let anoms = fat_forensic::audit_path(std::path::Path::new(&path)).unwrap();
+    assert!(!has_code(&anoms, "FAT-BOOT-SIG-INVALID"));
+    // A missing file is a loud error, not an empty result.
+    assert!(fat_forensic::audit_path(std::path::Path::new("/no/such/img")).is_err());
+}
+
+#[test]
 fn clean_fat16_has_no_structural_anomalies() {
     let img = include_bytes!("../../tests/data/fat16.img").to_vec();
     let anoms = audit_reader(Cursor::new(img)).unwrap();
@@ -85,6 +94,82 @@ fn surfaces_a_deleted_directory_entry() {
     img[pos] = 0xE5;
     let anoms = audit_reader(Cursor::new(img)).unwrap();
     assert!(has_code(&anoms, "FAT-DIR-ENTRY-DELETED"));
+}
+
+#[test]
+fn truncated_exfat_does_not_false_positive_checksum() {
+    // Cut the image below the 12-sector boot region: the checksum cannot be
+    // verified, and the auditor must not fabricate a mismatch.
+    let full = include_bytes!("../../tests/data/exfat.img").to_vec();
+    let img = full[..3000].to_vec();
+    let anoms = audit_reader(Cursor::new(img)).unwrap();
+    assert!(!has_code(&anoms, "EXFAT-BOOT-CHECKSUM-MISMATCH"));
+}
+
+#[test]
+fn truncated_fat_regions_skip_mirror_check() {
+    let base = include_bytes!("../../tests/data/fat16.img").to_vec();
+    let geom = FatFs::open(Cursor::new(base.clone()))
+        .unwrap()
+        .geometry()
+        .clone();
+    let fat_bytes = (u64::from(geom.fat_size_sectors) * u64::from(geom.bytes_per_sector)) as usize;
+    let fat_start = geom.fat_start as usize;
+
+    // FAT1 truncated mid-region → cannot compare, no anomaly, no panic.
+    let img1 = base[..fat_start + fat_bytes / 2].to_vec();
+    assert!(!has_code(
+        &audit_reader(Cursor::new(img1)).unwrap(),
+        "FAT-MIRROR-MISMATCH"
+    ));
+
+    // FAT1 complete but FAT2 truncated mid-region.
+    let img2 = base[..fat_start + fat_bytes + fat_bytes / 2].to_vec();
+    assert!(!has_code(
+        &audit_reader(Cursor::new(img2)).unwrap(),
+        "FAT-MIRROR-MISMATCH"
+    ));
+}
+
+#[test]
+fn read_error_during_fat_read_surfaces_loud() {
+    // Serves the boot sector, then fails on the FAT read.
+    struct FailAfterBoot {
+        img: Vec<u8>,
+        pos: u64,
+        fail_at: u64,
+    }
+    impl std::io::Read for FailAfterBoot {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.fail_at {
+                return Err(std::io::Error::other("blocked"));
+            }
+            let start = self.pos as usize;
+            let n = buf.len().min(self.img.len().saturating_sub(start));
+            buf[..n].copy_from_slice(&self.img[start..start + n]);
+            self.pos += n as u64;
+            Ok(n)
+        }
+    }
+    impl std::io::Seek for FailAfterBoot {
+        fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+            if let std::io::SeekFrom::Start(p) = from {
+                self.pos = p;
+            }
+            Ok(self.pos)
+        }
+    }
+    let base = include_bytes!("../../tests/data/fat16.img").to_vec();
+    let geom = FatFs::open(Cursor::new(base.clone()))
+        .unwrap()
+        .geometry()
+        .clone();
+    let reader = FailAfterBoot {
+        img: base,
+        pos: 0,
+        fail_at: geom.fat_start, // boot read succeeds; the FAT read errors
+    };
+    assert!(audit_reader(reader).is_err());
 }
 
 #[test]
