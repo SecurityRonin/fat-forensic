@@ -18,6 +18,8 @@ thiserror = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# `fuzzing` is set by cargo-fuzz via RUSTFLAGS; declare it so check-cfg is quiet.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

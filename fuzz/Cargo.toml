@@ -1,0 +1,66 @@
+[package]
+name = "fat-forensic-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone workspace: the fuzz crate must not be pulled into the parent
+# (core/forensic/cli) workspace, whose virtual root manifest is not a package.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.fat-core]
+path = "../core"
+
+[dependencies.fat-forensic]
+path = "../forensic"
+
+[[bin]]
+name = "bpb"
+path = "fuzz_targets/bpb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fat_chain"
+path = "fuzz_targets/fat_chain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dir_entry"
+path = "fuzz_targets/dir_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exfat_boot"
+path = "fuzz_targets/exfat_boot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "exfat_dir"
+path = "fuzz_targets/exfat_dir.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_forensic"
+path = "fuzz_targets/fuzz_forensic.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
