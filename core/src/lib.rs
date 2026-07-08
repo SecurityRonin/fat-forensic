@@ -5,4 +5,8 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod boot;
 mod bytes;
+mod error;
+
+pub use error::{FatError, Result};
