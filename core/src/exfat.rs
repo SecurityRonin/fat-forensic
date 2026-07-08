@@ -7,6 +7,102 @@
 //! flag and skip the FAT entirely, and names are UTF-16 across File Name
 //! entries rather than 8.3 + VFAT.
 
+use crate::boot::{FatVariant, Geometry};
+use crate::bytes::{le_u32, u8_at};
+use crate::error::{FatError, Result};
+
+/// Parse the exFAT main boot sector into a [`Geometry`] (variant
+/// [`FatVariant::ExFat`]). `data_start` is set to the cluster-heap offset so
+/// the shared `cluster_offset` maps clusters uniformly with the FAT path.
+///
+/// Fails loud, naming the offending value, on any invalid field.
+pub fn parse_boot(boot: &[u8]) -> Result<Geometry> {
+    if boot.get(3..11) != Some(b"EXFAT   ") {
+        return Err(FatError::NotFat(format!(
+            "exFAT signature at 0x03 is {:02X?}, expected \"EXFAT   \"",
+            boot.get(3..11).unwrap_or(&[])
+        )));
+    }
+    let sig = crate::bytes::le_u16(boot, 510);
+    if sig != 0xAA55 {
+        return Err(FatError::InvalidBoot(format!(
+            "boot signature at 0x1FE is {sig:#06x}, expected 0x55AA"
+        )));
+    }
+
+    let bps_shift = u8_at(boot, 108);
+    if !(9..=12).contains(&bps_shift) {
+        return Err(FatError::InvalidBoot(format!(
+            "BytesPerSectorShift at 0x6C is {bps_shift}, not in 9..=12 (512..4096)"
+        )));
+    }
+    let spc_shift = u8_at(boot, 109);
+    // Cluster size (bytes) must not exceed 32 MiB (shift sum <= 25) per [MS] §3.1.6.
+    if u32::from(bps_shift) + u32::from(spc_shift) > 25 {
+        return Err(FatError::InvalidBoot(format!(
+            "SectorsPerClusterShift at 0x6D is {spc_shift}; cluster size exceeds 32 MiB"
+        )));
+    }
+    let bytes_per_sector = 1u32 << bps_shift;
+    let sectors_per_cluster = 1u32 << spc_shift;
+
+    let num_fats = u8_at(boot, 110);
+    if num_fats == 0 || num_fats > 2 {
+        return Err(FatError::InvalidBoot(format!(
+            "NumberOfFats at 0x6E is {num_fats}, must be 1 or 2"
+        )));
+    }
+
+    let fat_offset = le_u32(boot, 80);
+    let fat_length = le_u32(boot, 84);
+    let cluster_heap_offset = le_u32(boot, 88);
+    let count_of_clusters = le_u32(boot, 92);
+    let root_cluster = le_u32(boot, 96);
+
+    if root_cluster < 2 || root_cluster > count_of_clusters.saturating_add(1) {
+        return Err(FatError::InvalidBoot(format!(
+            "root cluster {root_cluster} outside 2..={}",
+            count_of_clusters.saturating_add(1)
+        )));
+    }
+
+    let bps = u64::from(bytes_per_sector);
+    Ok(Geometry {
+        variant: FatVariant::ExFat,
+        bytes_per_sector,
+        sectors_per_cluster,
+        cluster_size: bytes_per_sector * sectors_per_cluster,
+        reserved_sectors: 0,
+        num_fats: u32::from(num_fats),
+        fat_size_sectors: fat_length,
+        root_entry_count: 0,
+        total_sectors: crate::bytes::le_u64(boot, 72),
+        root_cluster,
+        count_of_clusters,
+        fat_start: u64::from(fat_offset) * bps,
+        root_dir_start: 0,
+        root_dir_bytes: 0,
+        data_start: u64::from(cluster_heap_offset) * bps,
+    })
+}
+
+/// The four-byte boot-region checksum over the first 11 sectors, excluding the
+/// `VolumeFlags` (offsets 106, 107) and `PercentInUse` (offset 112) fields
+/// ([MS] §3.4). A mismatch against the stored checksum is a tamper signal.
+pub fn boot_checksum(sectors: &[u8], bytes_per_sector: u32) -> u32 {
+    let n = (bytes_per_sector as usize)
+        .saturating_mul(11)
+        .min(sectors.len());
+    let mut checksum: u32 = 0;
+    for (i, &b) in sectors.iter().take(n).enumerate() {
+        if i == 106 || i == 107 || i == 112 {
+            continue;
+        }
+        checksum = checksum.rotate_right(1).wrapping_add(u32::from(b));
+    }
+    checksum
+}
+
 #[cfg(test)]
 mod tests {
     use super::{boot_checksum, parse_boot};
