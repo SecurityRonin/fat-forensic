@@ -8,8 +8,123 @@
 //! entries rather than 8.3 + VFAT.
 
 use crate::boot::{FatVariant, Geometry};
-use crate::bytes::{le_u32, u8_at};
+use crate::bytes::{le_u16, le_u32, le_u64, u8_at};
 use crate::error::{FatError, Result};
+use crate::time::{decode as decode_time, FatTimestamp};
+
+/// exFAT `FileAttributes` directory bit ([MS] §7.4.4).
+const ATTR_DIRECTORY: u16 = 0x0010;
+
+/// Entry-type base values (after masking off the 0x80 in-use bit).
+const TYPE_FILE: u8 = 0x05;
+const TYPE_STREAM_EXT: u8 = 0x40;
+const TYPE_FILE_NAME: u8 = 0x41;
+
+/// A decoded exFAT directory entry set (File + Stream Extension + File Name).
+#[derive(Debug, Clone)]
+pub struct ExfatDirEntry {
+    /// The reassembled UTF-16 name.
+    pub name: String,
+    /// Raw `FileAttributes` field.
+    pub attributes: u16,
+    /// Whether this is a directory.
+    pub is_dir: bool,
+    /// Whether the entry set is deleted (in-use bit clear).
+    pub deleted: bool,
+    /// First cluster of the data (`0` = empty).
+    pub first_cluster: u32,
+    /// Data length in bytes.
+    pub size: u64,
+    /// Whether the data is contiguous (NoFatChain — skip the FAT).
+    pub contiguous: bool,
+    /// 32-byte slot index of the File (`0x85`) entry.
+    pub index: u16,
+    /// Decoded creation timestamp.
+    pub created: Option<FatTimestamp>,
+    /// Decoded last-modified timestamp.
+    pub modified: Option<FatTimestamp>,
+    /// Decoded last-access timestamp.
+    pub accessed: Option<FatTimestamp>,
+}
+
+/// Split an exFAT 32-bit timestamp into a `(date, time)` pair for the shared
+/// FAT decoder (high 16 bits = date, low 16 bits = time; identical packing).
+fn ts_decode(raw: u32, tenths: u8) -> Option<FatTimestamp> {
+    decode_time((raw >> 16) as u16, (raw & 0xFFFF) as u16, tenths)
+}
+
+/// Parse an exFAT directory's raw bytes into decoded entry sets, reassembling
+/// UTF-16 names and surfacing deleted sets. Non-file primaries (allocation
+/// bitmap, up-case table, volume label) are skipped; parsing stops at the first
+/// end-of-directory marker (type `0x00`).
+pub fn parse_directory(data: &[u8]) -> Vec<ExfatDirEntry> {
+    let slots: Vec<&[u8]> = data.chunks_exact(32).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < slots.len() {
+        let e = slots[i];
+        let ty = e[0];
+        if ty == 0x00 {
+            break;
+        }
+        if ty & 0x7F != TYPE_FILE {
+            i += 1;
+            continue;
+        }
+        let secondary_count = usize::from(e[1]);
+        let entry = decode_set(&slots, i, secondary_count, e);
+        out.push(entry);
+        i += 1 + secondary_count;
+    }
+    out
+}
+
+/// Decode one File entry set starting at slot `i`.
+fn decode_set(slots: &[&[u8]], i: usize, secondary_count: usize, file: &[u8]) -> ExfatDirEntry {
+    let deleted = file[0] & 0x80 == 0;
+    let attributes = le_u16(file, 4);
+
+    let mut first_cluster = 0u32;
+    let mut size = 0u64;
+    let mut contiguous = false;
+    let mut name_len = 0usize;
+    let mut units: Vec<u16> = Vec::new();
+
+    for j in 1..=secondary_count {
+        let Some(s) = slots.get(i + j) else {
+            break;
+        };
+        match s[0] & 0x7F {
+            TYPE_STREAM_EXT => {
+                contiguous = s[1] & 0x02 != 0;
+                name_len = usize::from(s[3]);
+                first_cluster = le_u32(s, 20);
+                size = le_u64(s, 24);
+            }
+            TYPE_FILE_NAME => {
+                for k in 0..15 {
+                    units.push(le_u16(s, 1 + k * 2));
+                }
+            }
+            _ => {}
+        }
+    }
+    units.truncate(name_len);
+
+    ExfatDirEntry {
+        name: String::from_utf16_lossy(&units),
+        attributes,
+        is_dir: attributes & ATTR_DIRECTORY != 0,
+        deleted,
+        first_cluster,
+        size,
+        contiguous,
+        index: u16::try_from(i).unwrap_or(u16::MAX),
+        created: ts_decode(le_u32(file, 8), u8_at(file, 20)),
+        modified: ts_decode(le_u32(file, 12), u8_at(file, 21)),
+        accessed: ts_decode(le_u32(file, 16), 0),
+    }
+}
 
 /// Parse the exFAT main boot sector into a [`Geometry`] (variant
 /// [`FatVariant::ExFat`]). `data_start` is set to the cluster-heap offset so
