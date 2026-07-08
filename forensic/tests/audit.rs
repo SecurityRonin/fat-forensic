@@ -67,7 +67,9 @@ fn detects_fat_mirror_mismatch() {
 #[test]
 fn detects_exfat_boot_checksum_mismatch() {
     let mut img = include_bytes!("../../tests/data/exfat.img").to_vec();
-    img[5] ^= 0xFF; // a checksummed boot byte (offset 5 is not excluded)
+    // VolumeSerialNumber (offset 100): checksummed, not excluded (106/107/112),
+    // outside the EXFAT signature, and not a field the parser validates.
+    img[100] ^= 0xFF;
     let anoms = audit_reader(Cursor::new(img)).unwrap();
     assert!(has_code(&anoms, "EXFAT-BOOT-CHECKSUM-MISMATCH"));
 }

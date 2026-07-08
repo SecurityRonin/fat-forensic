@@ -35,8 +35,10 @@ pub enum FatError {
 }
 
 impl FatError {
-    /// Wrap an I/O error with the operation label.
-    pub(crate) fn io(op: &'static str, source: io::Error) -> Self {
+    /// Wrap an I/O error with the operation label. Public so downstream
+    /// analyzers can surface their own reads as typed `FatError`s.
+    #[must_use]
+    pub fn io(op: &'static str, source: io::Error) -> Self {
         FatError::Io { op, source }
     }
 }

@@ -131,9 +131,11 @@ impl<R: Read + Seek> FatFs<R> {
         &self.geom
     }
 
-    /// Contiguous image byte runs backing node `id`'s data, merging physically
-    /// adjacent clusters. The FAT12/16 fixed root is a single region run.
-    pub(crate) fn runs(&self, id: FileId) -> Result<Vec<(u64, u64)>> {
+    /// Contiguous image byte runs `(offset, len)` backing node `id`'s data,
+    /// merging physically adjacent clusters (the FAT12/16 fixed root is a single
+    /// region run). Useful to a forensic consumer that needs the on-disk run
+    /// list of a file or directory.
+    pub fn runs(&self, id: FileId) -> Result<Vec<(u64, u64)>> {
         let (chain, total) = self.data_extent(id)?;
         if chain.is_empty() {
             return Ok(if total == 0 {
