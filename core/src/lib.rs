@@ -11,6 +11,7 @@
 
 mod boot;
 mod bytes;
+mod dirent;
 mod fat;
 mod error;
 
