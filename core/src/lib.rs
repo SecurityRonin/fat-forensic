@@ -15,6 +15,7 @@ mod dirent;
 mod fat;
 mod error;
 mod fs;
+mod time;
 
 pub use boot::FatVariant;
 pub use error::{FatError, Result};
