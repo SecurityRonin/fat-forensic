@@ -1,0 +1,30 @@
+[package]
+name = "fat-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "Pure-Rust, panic-free forensic reader for FAT12, FAT16, FAT32 and exFAT: one reader auto-detects the variant, walks directory trees and cluster chains, reassembles VFAT long names and exFAT name entry sets, and exposes deleted directory entries."
+readme = "../README.md"
+keywords = ["fat", "exfat", "fat32", "filesystem", "forensics"]
+categories = ["filesystem", "parser-implementations"]
+
+[lib]
+name = "fat"
+
+[dependencies]
+thiserror = { workspace = true }
+forensic-vfs = { workspace = true, optional = true }
+
+[features]
+default = []
+# forensic-vfs FileSystem adapter — opt-in so third-party consumers who only
+# want the reader do not pull the VFS type graph.
+vfs = ["dep:forensic-vfs"]
+
+[dev-dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "fat-forensic"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "Forensic FAT/exFAT anomaly auditor: surfaces invalid BPBs, FAT1/FAT2 disagreements, bad/cross-linked/orphaned cluster chains, exFAT boot-checksum mismatches and deleted directory entries as graded forensicnomicon findings."
+readme = "../README.md"
+keywords = ["fat", "exfat", "forensics", "dfir", "anomaly"]
+categories = ["filesystem", "parser-implementations"]
+
+[dependencies]
+fat-core = { workspace = true }
+forensicnomicon = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[workspace]
+members = ["core", "forensic", "cli"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+# Published libraries keep a low, CI-verified MSRV (a compatibility promise).
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/SecurityRonin/fat-forensic"
+
+[workspace.dependencies]
+fat-core = { path = "core", version = "0.1.0" }
+fat-forensic = { path = "forensic", version = "0.1.0" }
+forensicnomicon = "1"
+forensic-vfs = "0.1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+correctness = "deny"
+suspicious = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+module_name_repetitions = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }

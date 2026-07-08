@@ -1,0 +1,24 @@
+[package]
+name = "fat-forensic-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "fat4n6: command-line FAT/exFAT forensic auditor and entry lister over fat-core / fat-forensic."
+# Debug/standalone CLI — the fleet end-user CLI is issen/disk4n6. Not published.
+publish = false
+
+[[bin]]
+name = "fat4n6"
+path = "src/main.rs"
+
+[dependencies]
+fat-core = { workspace = true }
+fat-forensic = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

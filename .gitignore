@@ -1,0 +1,20 @@
+target/
+Cargo.lock
+
+# Claude Code session artifacts (worktrees, archived planning, jobs)
+.claude/
+
+# MkDocs build output
+site/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Large minted fixture (34 MB) — regenerate via tests/data/mint.sh, env-gate the test
+tests/data/fat32.img

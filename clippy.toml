@@ -1,0 +1,7 @@
+# Allow `unwrap()`/`expect()` inside tests; production code keeps them denied
+# (workspace Cargo.toml). Tests legitimately unwrap to fail loudly.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# FAT/exFAT format names that look like code identifiers to doc_markdown.
+doc-valid-idents = ["FAT12", "FAT16", "FAT32", "exFAT", "VFAT", "BPB", "LFN", "UCS-2", "UTF-16", "UTF-16LE", "NoFatChain", "EBPB", "OEM", "FSInfo", "0xE5", "8.3", "..", "SHA-1", "MD5"]
