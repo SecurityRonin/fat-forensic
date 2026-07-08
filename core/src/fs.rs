@@ -2,6 +2,374 @@
 //! (exFAT is wired in a later unit), then serves uniform navigation: `root`,
 //! `read_dir`, `lookup`, `meta`, `read_at`.
 
+use std::io::{Read, Seek, SeekFrom};
+use std::sync::Mutex;
+
+use crate::boot::{FatVariant, Geometry};
+use crate::dirent::{parse_directory, DirEntry};
+use crate::error::{FatError, Result};
+use crate::fat::follow_chain;
+
+/// Cap on bytes materialized for one directory (defends against a lying chain).
+const MAX_DIR_BYTES: usize = 64 * 1024 * 1024;
+/// Cap on the cached FAT region (defends against an absurd `fat_size`).
+const MAX_FAT_BYTES: u64 = 256 * 1024 * 1024;
+/// Marker `dir_cluster` value meaning "the FAT12/16 fixed root region".
+const FIXED_ROOT: u32 = u32::MAX;
+
+/// A handle to a node. The root is distinct; every other node is addressed by
+/// its parent directory's first cluster plus its 32-byte slot index — so the
+/// entry (including a deleted one) can always be re-read from the structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileId {
+    /// The volume root directory.
+    Root,
+    /// A directory entry: `dir_cluster` is the parent directory's first cluster
+    /// (or [`FIXED_ROOT`] for the FAT12/16 fixed root), `index` the slot.
+    Entry {
+        /// First cluster of the parent directory (or the fixed-root marker).
+        dir_cluster: u32,
+        /// 32-byte slot index of the entry within its directory.
+        index: u16,
+    },
+}
+
+/// A resolved node: identity plus the fields a caller needs to navigate or read.
+#[derive(Debug, Clone)]
+pub struct Node {
+    /// Stable handle to this node.
+    pub id: FileId,
+    /// Effective name (long name if valid, else 8.3).
+    pub name: String,
+    /// Raw 8.3 short name.
+    pub short_name: String,
+    /// Whether this is a directory.
+    pub is_dir: bool,
+    /// Whether this entry is deleted (`0xE5`).
+    pub is_deleted: bool,
+    /// Whether this is the volume-label entry.
+    pub is_volume_label: bool,
+    /// File size in bytes (0 for directories).
+    pub size: u64,
+    /// Raw attribute byte.
+    pub attributes: u8,
+    /// First cluster of the node's data (0 = empty).
+    pub first_cluster: u32,
+}
+
+/// Where a directory's raw bytes live.
+#[derive(Clone, Copy)]
+enum DirLoc {
+    /// FAT12/16 fixed root region.
+    FixedRoot,
+    /// A cluster chain starting at the given cluster.
+    Cluster(u32),
+}
+
+/// A pure-Rust reader over a FAT12/16/32 volume.
+pub struct FatFs<R> {
+    inner: Mutex<R>,
+    geom: Geometry,
+    fat: Vec<u8>,
+    max_clusters: usize,
+}
+
+impl<R: Read + Seek> FatFs<R> {
+    /// Open a FAT volume, auto-detecting the variant from the boot sector.
+    ///
+    /// Fails loud if the boot sector is not a recognized FAT filesystem. (exFAT
+    /// volumes are detected and rejected here until the exFAT unit lands.)
+    pub fn open(mut reader: R) -> Result<Self> {
+        let mut boot = [0u8; 512];
+        read_exact_into(&mut reader, 0, &mut boot)?;
+
+        if &boot[3..11] == b"EXFAT   " {
+            return Err(FatError::NotFat(
+                "exFAT volume (EXFAT signature at 0x03) — not yet supported by this reader".into(),
+            ));
+        }
+
+        let geom = Geometry::parse(&boot)?;
+        // Cache FAT1. Its size is bounded by the (validated) BPB but capped
+        // against an absurd fat_size claim.
+        let fat_bytes = u64::from(geom.fat_size_sectors) * u64::from(geom.bytes_per_sector);
+        let fat_len = usize::try_from(fat_bytes.min(MAX_FAT_BYTES)).unwrap_or(0);
+        let fat = read_upto(&mut reader, geom.fat_start, fat_len)?;
+        let max_clusters = geom.count_of_clusters as usize + 2;
+
+        Ok(FatFs {
+            inner: Mutex::new(reader),
+            geom,
+            fat,
+            max_clusters,
+        })
+    }
+
+    /// The detected FAT variant.
+    pub fn variant(&self) -> FatVariant {
+        self.geom.variant
+    }
+
+    /// The root directory handle.
+    pub fn root(&self) -> FileId {
+        FileId::Root
+    }
+
+    /// List the entries of the directory `id` (allocated and deleted).
+    pub fn read_dir(&self, id: FileId) -> Result<Vec<Node>> {
+        let loc = self.own_dirloc(id)?;
+        let marker = loc_marker(loc);
+        let bytes = self.read_dir_bytes(loc)?;
+        Ok(parse_directory(&bytes)
+            .into_iter()
+            .map(|e| node_from(marker, e))
+            .collect())
+    }
+
+    /// Resolve a single child of `dir` by name (allocated entries only).
+    pub fn lookup(&self, dir: FileId, name: &[u8]) -> Result<Option<FileId>> {
+        for node in self.read_dir(dir)? {
+            if !node.is_deleted && !node.is_volume_label && node.name.as_bytes() == name {
+                return Ok(Some(node.id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Resolve metadata for `id`.
+    pub fn meta(&self, id: FileId) -> Result<Node> {
+        match id {
+            FileId::Root => Ok(root_node()),
+            FileId::Entry { .. } => self.resolve_entry(id),
+        }
+    }
+
+    /// Read up to `buf.len()` bytes at byte offset `off` within node `id`.
+    /// Returns the number of bytes read (0 at or past the end of the data).
+    pub fn read_at(&self, id: FileId, off: u64, buf: &mut [u8]) -> Result<usize> {
+        let (chain, total) = self.data_extent(id)?;
+        if off >= total {
+            return Ok(0);
+        }
+        let cluster_size = u64::from(self.geom.cluster_size);
+        let end = off.saturating_add(buf.len() as u64).min(total);
+        let mut pos = off;
+        let mut written = 0usize;
+        while pos < end {
+            let ci = usize::try_from(pos / cluster_size).unwrap_or(usize::MAX);
+            let Some(&cluster) = chain.get(ci) else {
+                break; // chain shorter than the size field claims → stop, no panic
+            };
+            let Some(base) = self.geom.cluster_offset(cluster) else {
+                break; // cov:unreachable: chain clusters are >= 2 by construction
+            };
+            let intra = pos % cluster_size;
+            let avail = cluster_size - intra;
+            let want = usize::try_from((end - pos).min(avail)).unwrap_or(0);
+            let got = self.read_region(base + intra, &mut buf[written..written + want])?;
+            if got == 0 {
+                break; // truncated image
+            }
+            written += got;
+            pos += got as u64;
+        }
+        Ok(written)
+    }
+
+    // ---- internals -------------------------------------------------------
+
+    /// The [`DirLoc`] of the directory that `id` *is* (for enumerating it).
+    fn own_dirloc(&self, id: FileId) -> Result<DirLoc> {
+        match id {
+            FileId::Root => Ok(if self.geom.variant == FatVariant::Fat32 {
+                DirLoc::Cluster(self.geom.root_cluster)
+            } else {
+                DirLoc::FixedRoot
+            }),
+            FileId::Entry { .. } => {
+                let node = self.resolve_entry(id)?;
+                if !node.is_dir {
+                    return Err(FatError::Corrupt(format!(
+                        "{:?} is not a directory",
+                        node.name
+                    )));
+                }
+                Ok(DirLoc::Cluster(node.first_cluster))
+            }
+        }
+    }
+
+    /// Re-read the directory entry an [`FileId::Entry`] points at.
+    fn resolve_entry(&self, id: FileId) -> Result<Node> {
+        let FileId::Entry { dir_cluster, index } = id else {
+            return Ok(root_node()); // cov:unreachable: callers pass Entry only
+        };
+        let loc = if dir_cluster == FIXED_ROOT {
+            DirLoc::FixedRoot
+        } else {
+            DirLoc::Cluster(dir_cluster)
+        };
+        let bytes = self.read_dir_bytes(loc)?;
+        parse_directory(&bytes)
+            .into_iter()
+            .find(|e| e.index == index)
+            .map(|e| node_from(dir_cluster, e))
+            .ok_or_else(|| FatError::Corrupt(format!("no directory entry at slot {index}")))
+    }
+
+    /// The cluster chain and total byte length backing `id`'s data.
+    fn data_extent(&self, id: FileId) -> Result<(Vec<u32>, u64)> {
+        match id {
+            FileId::Root => match self.own_dirloc(id)? {
+                DirLoc::FixedRoot => Ok((Vec::new(), u64::from(self.geom.root_dir_bytes))),
+                DirLoc::Cluster(c) => {
+                    let chain = self.chain(c);
+                    let total = chain.len() as u64 * u64::from(self.geom.cluster_size);
+                    Ok((chain, total))
+                }
+            },
+            FileId::Entry { .. } => {
+                let node = self.resolve_entry(id)?;
+                if node.is_dir {
+                    let chain = self.chain(node.first_cluster);
+                    let total = chain.len() as u64 * u64::from(self.geom.cluster_size);
+                    Ok((chain, total))
+                } else {
+                    Ok((self.chain(node.first_cluster), node.size))
+                }
+            }
+        }
+    }
+
+    /// Read the raw bytes of a directory.
+    fn read_dir_bytes(&self, loc: DirLoc) -> Result<Vec<u8>> {
+        match loc {
+            DirLoc::FixedRoot => {
+                self.read_region_vec(self.geom.root_dir_start, self.geom.root_dir_bytes as usize)
+            }
+            DirLoc::Cluster(c) => {
+                let cluster_size = self.geom.cluster_size as usize;
+                let mut out = Vec::new();
+                for cluster in self.chain(c) {
+                    if out.len() >= MAX_DIR_BYTES {
+                        break;
+                    }
+                    let Some(base) = self.geom.cluster_offset(cluster) else {
+                        break; // cov:unreachable: chain clusters are >= 2
+                    };
+                    out.extend(self.read_region_vec(base, cluster_size)?);
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// The (capped) cluster chain starting at `start`.
+    fn chain(&self, start: u32) -> Vec<u32> {
+        if start < 2 {
+            return Vec::new();
+        }
+        follow_chain(&self.fat, self.geom.variant, start, self.max_clusters)
+    }
+
+    /// Read up to `buf.len()` bytes at `offset`, returning the count read.
+    fn read_region(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| FatError::Corrupt("reader lock poisoned".into()))?;
+        guard
+            .seek(SeekFrom::Start(offset))
+            .map_err(|e| FatError::io("seek", e))?;
+        read_fill(&mut *guard, buf)
+    }
+
+    /// Read `len` bytes at `offset` into a fresh vector (short read tolerated).
+    fn read_region_vec(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        let n = self.read_region(offset, &mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+}
+
+/// The marker `dir_cluster` for children enumerated under `loc`.
+fn loc_marker(loc: DirLoc) -> u32 {
+    match loc {
+        DirLoc::FixedRoot => FIXED_ROOT,
+        DirLoc::Cluster(c) => c,
+    }
+}
+
+/// The synthetic root node.
+fn root_node() -> Node {
+    Node {
+        id: FileId::Root,
+        name: String::new(),
+        short_name: String::new(),
+        is_dir: true,
+        is_deleted: false,
+        is_volume_label: false,
+        size: 0,
+        attributes: crate::dirent::ATTR_DIRECTORY,
+        first_cluster: 0,
+    }
+}
+
+/// Build a [`Node`] from a decoded directory entry under parent `marker`.
+fn node_from(marker: u32, e: DirEntry) -> Node {
+    Node {
+        id: FileId::Entry {
+            dir_cluster: marker,
+            index: e.index,
+        },
+        name: e.name,
+        short_name: e.short_name,
+        is_dir: e.is_dir,
+        is_deleted: e.deleted,
+        is_volume_label: e.is_volume_label,
+        size: u64::from(e.size),
+        attributes: e.attributes,
+        first_cluster: e.first_cluster,
+    }
+}
+
+/// Seek to `offset` and read exactly `buf.len()` bytes, failing loud on EOF.
+fn read_exact_into<R: Read + Seek>(reader: &mut R, offset: u64, buf: &mut [u8]) -> Result<()> {
+    reader
+        .seek(SeekFrom::Start(offset))
+        .map_err(|e| FatError::io("seek", e))?;
+    reader
+        .read_exact(buf)
+        .map_err(|e| FatError::io("read boot sector", e))
+}
+
+/// Seek to `offset` and read up to `len` bytes (short read tolerated).
+fn read_upto<R: Read + Seek>(reader: &mut R, offset: u64, len: usize) -> Result<Vec<u8>> {
+    reader
+        .seek(SeekFrom::Start(offset))
+        .map_err(|e| FatError::io("seek", e))?;
+    let mut buf = vec![0u8; len];
+    let n = read_fill(reader, &mut buf)?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+/// Fill `buf` as far as the reader allows, returning the byte count (a short
+/// read at EOF is not an error — a truncated image degrades, never panics).
+fn read_fill<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(FatError::io("read", e)),
+        }
+    }
+    Ok(filled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::FatFs;

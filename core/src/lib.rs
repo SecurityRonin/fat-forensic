@@ -16,4 +16,6 @@ mod fat;
 mod error;
 mod fs;
 
+pub use boot::FatVariant;
 pub use error::{FatError, Result};
+pub use fs::{FatFs, FileId, Node};

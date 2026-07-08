@@ -101,7 +101,10 @@ pub fn parse_directory(data: &[u8]) -> Vec<DirEntry> {
 fn decode_short(chunk: &[u8], idx: usize, long_name: Option<String>, deleted: bool) -> DirEntry {
     let attr = chunk[11];
     let is_volume_label = attr & ATTR_VOLUME_ID != 0 && attr != ATTR_LFN;
-    let short_name = decode_short_name(&chunk[0..11], is_volume_label, deleted);
+    // NTRes (offset 12) low bits carry the Windows NT lowercase convention:
+    // 0x08 = base name is lowercase, 0x10 = extension is lowercase.
+    let nt_flags = chunk[12];
+    let short_name = decode_short_name(&chunk[0..11], nt_flags, is_volume_label, deleted);
     let first_cluster = (u32::from(le_u16(chunk, 20)) << 16) | u32::from(le_u16(chunk, 26));
     DirEntry {
         name: long_name.unwrap_or_else(|| short_name.clone()),
@@ -119,8 +122,9 @@ fn decode_short(chunk: &[u8], idx: usize, long_name: Option<String>, deleted: bo
     }
 }
 
-/// Render the 8.3 short name from the 11 raw bytes.
-fn decode_short_name(raw: &[u8], is_volume_label: bool, deleted: bool) -> String {
+/// Render the 8.3 short name from the 11 raw bytes, applying the NT lowercase
+/// flags (`nt_flags` bit 0x08 = lowercase base, 0x10 = lowercase extension).
+fn decode_short_name(raw: &[u8], nt_flags: u8, is_volume_label: bool, deleted: bool) -> String {
     let mut bytes = [0u8; 11];
     bytes.copy_from_slice(&raw[0..11]);
     // 0x05 in the first byte encodes a literal 0xE5 lead byte (Kanji).
@@ -133,8 +137,14 @@ fn decode_short_name(raw: &[u8], is_volume_label: bool, deleted: bool) -> String
     if is_volume_label {
         return trim(&bytes);
     }
-    let base = trim(&bytes[0..8]);
-    let ext = trim(&bytes[8..11]);
+    let mut base = trim(&bytes[0..8]);
+    let mut ext = trim(&bytes[8..11]);
+    if nt_flags & 0x08 != 0 {
+        base = base.to_ascii_lowercase();
+    }
+    if nt_flags & 0x10 != 0 {
+        ext = ext.to_ascii_lowercase();
+    }
     if ext.is_empty() {
         base
     } else {
@@ -283,6 +293,18 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "readme file.txt");
         assert_eq!(entries[0].short_name, "README~1.TXT");
+    }
+
+    #[test]
+    fn nt_lowercase_flag_lowercases_short_name() {
+        // "SUBDIR" with NTRes bit 0x08 → displayed "subdir" (Windows/macOS quirk).
+        let mut e = short_entry(b"SUBDIR     ", ATTR_DIRECTORY, 10, 0);
+        e[12] = 0x08;
+        assert_eq!(parse_directory(&e)[0].name, "subdir");
+        // "HELLO.txt": base uppercase, extension lowercase (bit 0x10).
+        let mut e = short_entry(b"HELLO   TXT", 0x20, 5, 1);
+        e[12] = 0x10;
+        assert_eq!(parse_directory(&e)[0].name, "HELLO.txt");
     }
 
     #[test]
