@@ -6,18 +6,10 @@
 
 use crate::bytes::le_u16;
 
-/// Read-only attribute bit.
-pub const ATTR_READ_ONLY: u8 = 0x01;
-/// Hidden attribute bit.
-pub const ATTR_HIDDEN: u8 = 0x02;
-/// System attribute bit.
-pub const ATTR_SYSTEM: u8 = 0x04;
 /// Volume-label attribute bit.
 pub const ATTR_VOLUME_ID: u8 = 0x08;
 /// Directory attribute bit.
 pub const ATTR_DIRECTORY: u8 = 0x10;
-/// Archive attribute bit.
-pub const ATTR_ARCHIVE: u8 = 0x20;
 /// The attribute value marking a VFAT long-name component (`RO|HID|SYS|VOL`).
 pub const ATTR_LFN: u8 = 0x0F;
 
@@ -323,6 +315,44 @@ mod tests {
         let entries = parse_directory(&dir);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "FIRST.TXT");
+    }
+
+    #[test]
+    fn kanji_lead_byte_0x05_restored() {
+        // 0x05 in the first byte encodes a literal 0xE5 lead byte.
+        let mut e = short_entry(b"\x05ELLO   TXT", 0x20, 5, 1);
+        e[0] = 0x05;
+        let name = parse_directory(&e)[0].name.clone();
+        assert!(name.starts_with('\u{00E5}'));
+    }
+
+    #[test]
+    fn deleted_lfn_entry_is_skipped() {
+        // A lone deleted LFN component (0xE5 + attr 0x0F) yields no entry.
+        let mut lfn = lfn_entry(1, true, 0xAA, &"x".encode_utf16().collect::<Vec<_>>());
+        lfn[0] = 0xE5;
+        assert!(parse_directory(&lfn).is_empty());
+    }
+
+    #[test]
+    fn lfn_padding_ffff_is_ignored() {
+        let short = b"README~1TXT";
+        let sum = lfn_checksum(short);
+        let chars = [u16::from(b'x'), 0xFFFF, u16::from(b'y')];
+        let mut dir = Vec::new();
+        dir.extend_from_slice(&lfn_entry(1, true, sum, &chars));
+        dir.extend_from_slice(&short_entry(short, 0x20, 5, 1));
+        assert_eq!(parse_directory(&dir)[0].name, "xy");
+    }
+
+    #[test]
+    fn empty_long_name_falls_back_to_short() {
+        let short = b"HELLO   TXT";
+        let sum = lfn_checksum(short);
+        let mut dir = Vec::new();
+        dir.extend_from_slice(&lfn_entry(1, true, sum, &[])); // first char 0x0000
+        dir.extend_from_slice(&short_entry(short, 0x20, 5, 1));
+        assert_eq!(parse_directory(&dir)[0].name, "HELLO.TXT");
     }
 
     #[test]

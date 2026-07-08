@@ -329,6 +329,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wrong_exfat_signature() {
+        let mut b = synth_boot();
+        b[3..11].copy_from_slice(b"NOTEXFAT");
+        assert!(parse_boot(&b).is_err());
+    }
+
+    #[test]
+    fn rejects_oversize_cluster_shift() {
+        let mut b = synth_boot();
+        b[109] = 20; // 512-byte sector * 2^20 clusters → > 32 MiB cluster
+        assert!(parse_boot(&b).is_err());
+    }
+
+    #[test]
+    fn rejects_bad_fat_count() {
+        let mut b = synth_boot();
+        b[110] = 3; // must be 1 or 2
+        assert!(parse_boot(&b).is_err());
+        b[110] = 0;
+        assert!(parse_boot(&b).is_err());
+    }
+
+    #[test]
+    fn rejects_root_cluster_out_of_range() {
+        let mut b = synth_boot();
+        b[96..100].copy_from_slice(&1u32.to_le_bytes()); // < 2
+        assert!(parse_boot(&b).is_err());
+        b[96..100].copy_from_slice(&9999u32.to_le_bytes()); // > count+1
+        assert!(parse_boot(&b).is_err());
+    }
+
+    #[test]
     fn parses_a_file_entry_set() {
         let mut dir = Vec::new();
         dir.extend_from_slice(&entry_set(false, "Hi.txt", 0x20, true, 10, 5));
@@ -358,6 +390,28 @@ mod tests {
         assert!(entries[0].is_dir);
         assert_eq!(entries[1].name, "gone.txt");
         assert!(entries[1].deleted);
+    }
+
+    #[test]
+    fn lying_secondary_count_is_bounded() {
+        // SecondaryCount claims 9 secondaries but the directory ends after one.
+        let mut dir = Vec::new();
+        dir.extend_from_slice(&file_entry(false, 9, 0x20));
+        dir.extend_from_slice(&stream_ext(false, true, 1, 5, 1));
+        // no more slots → the secondary walk breaks without panicking
+        let entries = parse_directory(&dir);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn unknown_secondary_type_is_ignored() {
+        let mut dir = Vec::new();
+        dir.extend_from_slice(&file_entry(false, 2, 0x20));
+        dir.extend_from_slice(&stream_ext(false, true, 1, 5, 1));
+        let mut vendor = [0u8; 32];
+        vendor[0] = 0xE0; // Vendor Extension secondary — not Stream/Name
+        dir.extend_from_slice(&vendor);
+        assert_eq!(parse_directory(&dir).len(), 1);
     }
 
     #[test]

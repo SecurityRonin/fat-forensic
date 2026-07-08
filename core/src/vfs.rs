@@ -310,6 +310,20 @@ mod tests {
     }
 
     #[test]
+    fn extents_of_fixed_root_region() {
+        // The FAT12/16 fixed root is a single contiguous region run.
+        let fs = open();
+        let vfs: &dyn FileSystem = &fs;
+        let runs: Vec<_> = vfs
+            .extents(vfs.root(), StreamId::Default)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].run.len > 0);
+    }
+
+    #[test]
     fn sector_sizes_reported() {
         let fs = open();
         let vfs: &dyn FileSystem = &fs;
@@ -334,5 +348,80 @@ mod tests {
         let id = vfs.lookup(vfs.root(), b"HELLO.TXT").unwrap().unwrap();
         assert!(vfs.read_at(id, StreamId::Slack, 0, &mut [0u8; 4]).is_err());
         assert!(vfs.extents(id, StreamId::Named(1)).is_err());
+    }
+
+    #[test]
+    fn foreign_file_id_is_refused() {
+        use forensic_vfs::FileId as VfsId;
+        let fs = open();
+        let vfs: &dyn FileSystem = &fs;
+        let foreign = VfsId::NtfsRef { entry: 5, seq: 1 };
+        assert!(vfs.read_dir(foreign).is_err());
+        assert!(vfs.meta(foreign).is_err());
+    }
+
+    #[test]
+    fn error_maps_through_adapter() {
+        use forensic_vfs::{Allocation, FileId as VfsId};
+        // A structural error (read_dir on a file) maps to VfsError::Decode.
+        let fs = open();
+        let vfs: &dyn FileSystem = &fs;
+        let file = vfs.lookup(vfs.root(), b"HELLO.TXT").unwrap().unwrap();
+        assert!(vfs.read_dir(file).is_err());
+        // meta on the root reports ino 0 and Allocated.
+        let m = vfs.meta(vfs.root()).unwrap();
+        assert_eq!(m.ino, 0);
+
+        // A deleted node (synthetic FAT32) maps to Allocation::Deleted.
+        let synth = crate::fs::synth_fat32();
+        let dfs = FatFs::open(Cursor::new(synth)).unwrap();
+        let dvfs: &dyn FileSystem = &dfs;
+        // GONE.TXT is the deleted entry at slot 6 under the clustered root (cluster 2).
+        let deleted = VfsId::FatDirEntry {
+            cluster: 2,
+            index: 6,
+        };
+        assert_eq!(dvfs.meta(deleted).unwrap().allocated, Allocation::Deleted);
+    }
+
+    #[test]
+    fn io_error_maps_to_vfs_io() {
+        // A reader that opens (boot + FAT) but fails on data reads → VfsError::Io.
+        struct DataFails {
+            img: Vec<u8>,
+            pos: u64,
+            data_start: u64,
+        }
+        impl std::io::Read for DataFails {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos >= self.data_start {
+                    return Err(std::io::Error::other("blocked"));
+                }
+                let start = self.pos as usize;
+                let n = buf.len().min(self.img.len().saturating_sub(start));
+                buf[..n].copy_from_slice(&self.img[start..start + n]);
+                self.pos += n as u64;
+                Ok(n)
+            }
+        }
+        impl std::io::Seek for DataFails {
+            fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+                if let std::io::SeekFrom::Start(p) = from {
+                    self.pos = p;
+                }
+                Ok(self.pos)
+            }
+        }
+        let reader = DataFails {
+            img: crate::fs::synth_fat32(),
+            pos: 0,
+            data_start: (32 + 2 * 512) * 512,
+        };
+        let fs = FatFs::open(reader).unwrap();
+        let vfs: &dyn FileSystem = &fs;
+        assert!(matches!(
+            vfs.read_dir(vfs.root()),
+            Err(forensic_vfs::VfsError::Io { .. })
+        ));
     }
 }

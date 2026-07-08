@@ -145,4 +145,9 @@ mod tests {
         let fat = vec![0u8; 32]; // all zero → cluster 2 points to free (0)
         assert_eq!(follow_chain(&fat, Fat16, 2, 100), vec![2]);
     }
+
+    #[test]
+    fn reserved_start_cluster_yields_empty_chain() {
+        assert!(follow_chain(&[0u8; 32], Fat16, 1, 100).is_empty());
+    }
 }

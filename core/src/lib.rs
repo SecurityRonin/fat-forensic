@@ -4,22 +4,20 @@
 //! variant from the boot sector and exposes uniform navigation across all four.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-// Bottom-up TDD scaffold: leaf parsers (bytes/boot/fat/dirent/exfat) land before
-// their FatFs/vfs consumers. This allow is REMOVED in the final wiring commit,
-// where any genuinely-dead code then surfaces.
-#![allow(dead_code)]
 
 mod boot;
 mod bytes;
 mod dirent;
+mod error;
 mod exfat;
 mod fat;
-mod error;
 mod fs;
 mod time;
 #[cfg(feature = "vfs")]
 mod vfs;
 
-pub use boot::FatVariant;
+pub use boot::{FatVariant, Geometry};
 pub use error::{FatError, Result};
+pub use exfat::boot_checksum;
 pub use fs::{FatFs, FileId, Node};
+pub use time::FatTimestamp;

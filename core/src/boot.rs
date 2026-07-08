@@ -339,6 +339,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_power_of_two_cluster() {
+        let mut b = fat12_boot();
+        b[13] = 3; // sectors-per-cluster not a power of two
+        assert!(Geometry::parse(&b).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_reserved() {
+        let mut b = fat12_boot();
+        b[14..16].copy_from_slice(&0u16.to_le_bytes());
+        assert!(Geometry::parse(&b).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_fat_size() {
+        let mut b = fat12_boot();
+        b[22..24].copy_from_slice(&0u16.to_le_bytes()); // fat16=0
+        b[36..40].copy_from_slice(&0u32.to_le_bytes()); // fat32=0
+        assert!(Geometry::parse(&b).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_total_sectors() {
+        let mut b = fat12_boot();
+        b[19..21].copy_from_slice(&0u16.to_le_bytes()); // total16=0
+        b[32..36].copy_from_slice(&0u32.to_le_bytes()); // total32=0
+        assert!(Geometry::parse(&b).is_err());
+    }
+
+    #[test]
     fn rejects_oversize_reserved_region() {
         // reserved region larger than the volume → data underflow, must fail loud
         let mut b = fat12_boot();

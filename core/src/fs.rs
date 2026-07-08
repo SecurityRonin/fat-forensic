@@ -124,8 +124,10 @@ impl<R: Read + Seek> FatFs<R> {
         self.geom.variant
     }
 
-    /// Resolved geometry (crate-internal; used by the vfs adapter).
-    pub(crate) fn geometry(&self) -> &Geometry {
+    /// The resolved on-disk volume geometry (variant, sector/cluster sizes, FAT
+    /// layout, and byte offsets). Useful to a forensic consumer that needs the
+    /// raw layout the reader computed.
+    pub fn geometry(&self) -> &Geometry {
         &self.geom
     }
 
@@ -369,7 +371,7 @@ impl<R: Read + Seek> FatFs<R> {
         let mut out = Vec::new();
         for cluster in self.clusters(first_cluster, size, contiguous) {
             if out.len() >= MAX_DIR_BYTES {
-                break;
+                break; // cov:unreachable: a real directory chain is far under 64 MiB
             }
             let Some(base) = self.geom.cluster_offset(cluster) else {
                 break; // cov:unreachable: chain clusters are >= 2
@@ -500,6 +502,7 @@ fn read_fill<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize> {
         match reader.read(&mut buf[filled..]) {
             Ok(0) => break,
             Ok(n) => filled += n,
+            // cov:unreachable: EINTR retry — in-memory/file readers never raise it
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(FatError::io("read", e)),
         }
@@ -507,23 +510,20 @@ fn read_fill<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize> {
     Ok(filled)
 }
 
+/// Build a small but structurally-valid FAT32 image: 512 B sectors, 32
+/// reserved, 2 FATs of 512 sectors, root at cluster 2 with a handful of files
+/// (`TEST`, `BIG` 2-cluster, `TRUNC`, `EOF`, `ZERO`, `HALF`, a deleted `GONE`).
+/// The claimed volume size yields > 65525 clusters (→ FAT32) while only the
+/// used clusters are physically backed. Shared by the fs and vfs test modules.
 #[cfg(test)]
-mod tests {
-    use super::FatFs;
-    use crate::boot::FatVariant;
-    use std::io::Cursor;
-
-    /// Build a small but structurally-valid FAT32 image: 512 B sectors, 32
-    /// reserved, 2 FATs of 512 sectors, root at cluster 2 with one file
-    /// `TEST.TXT` at cluster 3. The claimed volume size yields > 65525 clusters
-    /// (→ FAT32) while only the used clusters are physically backed.
-    fn synth_fat32() -> Vec<u8> {
+pub(crate) fn synth_fat32() -> Vec<u8> {
+    {
         let bps = 512usize;
         let reserved = 32usize;
         let fat_sectors = 512usize;
         let num_fats = 2usize;
         let data_start = (reserved + num_fats * fat_sectors) * bps; // cluster 2
-        let mut img = vec![0u8; data_start + 4 * bps];
+        let mut img = vec![0u8; data_start + 8 * bps]; // clusters 2..=9 backed
 
         // Boot sector / BPB.
         img[0] = 0xEB;
@@ -538,23 +538,55 @@ mod tests {
         img[510] = 0x55;
         img[511] = 0xAA;
 
-        // FAT1: cluster 2 (root) and cluster 3 (file) each end-of-chain.
+        // FAT1 (cluster N entry at byte offset N*4). EOC = 0x0FFFFFFF.
         let fat = reserved * bps;
-        img[fat + 8..fat + 12].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
-        img[fat + 12..fat + 16].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
+        let eoc = 0x0FFF_FFFFu32.to_le_bytes();
+        let put = |img: &mut [u8], c: usize, v: [u8; 4]| {
+            img[fat + c * 4..fat + c * 4 + 4].copy_from_slice(&v);
+        };
+        put(&mut img, 2, eoc); // root
+        put(&mut img, 3, eoc); // TEST.TXT
+        put(&mut img, 4, 5u32.to_le_bytes()); // BIG.TXT: 4 -> 5
+        put(&mut img, 5, eoc);
+        put(&mut img, 6, eoc); // TRUNC.TXT (claims more than its chain)
+        put(&mut img, 7, 8u32.to_le_bytes()); // HALF.TXT: 7 -> 8 (chain longer than size)
+        put(&mut img, 8, eoc);
+        put(&mut img, 10, eoc); // EOF.TXT (cluster beyond the image)
 
-        // Root directory (cluster 2): one short entry TEST.TXT → cluster 3, 9 B.
-        let mut e = [0u8; 32];
-        e[0..11].copy_from_slice(b"TEST    TXT");
-        e[11] = 0x20;
-        e[26..28].copy_from_slice(&3u16.to_le_bytes());
-        e[28..32].copy_from_slice(&9u32.to_le_bytes());
-        img[data_start..data_start + 32].copy_from_slice(&e);
+        // Root directory (cluster 2): four short entries.
+        let entry = |name: &[u8; 11], cluster: u16, size: u32| {
+            let mut e = [0u8; 32];
+            e[0..11].copy_from_slice(name);
+            e[11] = 0x20;
+            e[26..28].copy_from_slice(&cluster.to_le_bytes());
+            e[28..32].copy_from_slice(&size.to_le_bytes());
+            e
+        };
+        let root = data_start;
+        img[root..root + 32].copy_from_slice(&entry(b"TEST    TXT", 3, 9));
+        img[root + 32..root + 64].copy_from_slice(&entry(b"BIG     TXT", 4, 600));
+        img[root + 64..root + 96].copy_from_slice(&entry(b"TRUNC   TXT", 6, 2000));
+        img[root + 96..root + 128].copy_from_slice(&entry(b"EOF     TXT", 10, 512));
+        img[root + 128..root + 160].copy_from_slice(&entry(b"ZERO    TXT", 0, 0)); // empty
+        img[root + 160..root + 192].copy_from_slice(&entry(b"HALF    TXT", 7, 512)); // 512 B, 2-cluster chain
+        let mut del = entry(b"GONE    TXT", 3, 9);
+        del[0] = 0xE5; // deleted
+        img[root + 192..root + 224].copy_from_slice(&del);
 
-        // File data (cluster 3).
-        img[data_start + bps..data_start + bps + 9].copy_from_slice(b"hi fat32\n");
+        // File data.
+        img[data_start + bps..data_start + bps + 9].copy_from_slice(b"hi fat32\n"); // cluster 3
+        for i in 0..600 {
+            img[data_start + 2 * bps + i] = (i % 251) as u8; // BIG.TXT spans clusters 4,5
+        }
         img
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{synth_fat32, FatFs};
+    use crate::boot::FatVariant;
+    use std::io::Cursor;
 
     #[test]
     fn opens_and_reads_synthetic_fat32() {
@@ -593,5 +625,143 @@ mod tests {
     fn lookup_absent_name_is_none() {
         let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
         assert!(fs.lookup(fs.root(), b"NOPE.TXT").unwrap().is_none());
+    }
+
+    #[test]
+    fn reads_multi_cluster_file_across_boundary() {
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let id = fs.lookup(fs.root(), b"BIG.TXT").unwrap().unwrap();
+        assert_eq!(fs.meta(id).unwrap().size, 600);
+        let mut buf = vec![0u8; 600];
+        assert_eq!(fs.read_at(id, 0, &mut buf).unwrap(), 600);
+        for (i, &b) in buf.iter().enumerate() {
+            assert_eq!(b, (i % 251) as u8);
+        }
+        // Two physically-adjacent clusters (4,5) merge into one run.
+        let runs = fs.runs(id).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].1, 600);
+    }
+
+    #[test]
+    fn empty_file_has_no_runs() {
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let id = fs.lookup(fs.root(), b"ZERO.TXT").unwrap().unwrap();
+        assert_eq!(fs.meta(id).unwrap().size, 0);
+        assert!(fs.runs(id).unwrap().is_empty());
+        let mut buf = [0u8; 4];
+        assert_eq!(fs.read_at(id, 0, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn read_stops_when_chain_shorter_than_size() {
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let id = fs.lookup(fs.root(), b"TRUNC.TXT").unwrap().unwrap();
+        // size claims 2000 B (4 clusters) but the chain is one cluster.
+        let mut buf = vec![0u8; 2000];
+        assert_eq!(fs.read_at(id, 0, &mut buf).unwrap(), 512);
+    }
+
+    #[test]
+    fn read_stops_at_truncated_image() {
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let id = fs.lookup(fs.root(), b"EOF.TXT").unwrap().unwrap();
+        // cluster 10 lies beyond the backing image → 0 bytes, no panic.
+        let mut buf = vec![0u8; 512];
+        assert_eq!(fs.read_at(id, 0, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn meta_of_root_is_a_directory() {
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let m = fs.meta(fs.root()).unwrap();
+        assert!(m.is_dir);
+        assert_eq!(m.size, 0);
+    }
+
+    #[test]
+    fn read_dir_of_a_file_errs() {
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let id = fs.lookup(fs.root(), b"TEST.TXT").unwrap().unwrap();
+        assert!(fs.read_dir(id).is_err());
+    }
+
+    #[test]
+    fn size_smaller_than_chain_bounds_the_last_run() {
+        // HALF.TXT: 512-byte size but a two-cluster chain (7 -> 8).
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let id = fs.lookup(fs.root(), b"HALF.TXT").unwrap().unwrap();
+        let runs = fs.runs(id).unwrap();
+        assert_eq!(runs.iter().map(|r| r.1).sum::<u64>(), 512);
+    }
+
+    #[test]
+    fn runs_of_clustered_root() {
+        // data_extent(Root) on a clustered (FAT32) root.
+        let fs = FatFs::open(Cursor::new(synth_fat32())).unwrap();
+        let runs = fs.runs(fs.root()).unwrap();
+        assert!(!runs.is_empty());
+    }
+
+    #[test]
+    fn read_error_mid_stream_surfaces_loud() {
+        // A reader that serves the boot + FAT (offsets < data_start) but fails
+        // on data reads, so read_fill returns a loud I/O error.
+        struct DataFails {
+            img: Vec<u8>,
+            pos: u64,
+            data_start: u64,
+        }
+        impl std::io::Read for DataFails {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos >= self.data_start {
+                    return Err(std::io::Error::other("data read blocked"));
+                }
+                let start = self.pos as usize;
+                let n = buf.len().min(self.img.len().saturating_sub(start));
+                buf[..n].copy_from_slice(&self.img[start..start + n]);
+                self.pos += n as u64;
+                Ok(n)
+            }
+        }
+        impl std::io::Seek for DataFails {
+            fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+                if let std::io::SeekFrom::Start(p) = from {
+                    self.pos = p;
+                }
+                Ok(self.pos)
+            }
+        }
+        let img = synth_fat32();
+        let data_start = (32 + 2 * 512) * 512;
+        let reader = DataFails {
+            img,
+            pos: 0,
+            data_start,
+        };
+        let fs = FatFs::open(reader).unwrap(); // boot + FAT are before data_start
+        assert!(matches!(
+            fs.read_dir(fs.root()),
+            Err(crate::FatError::Io { .. })
+        ));
+    }
+
+    #[test]
+    fn io_error_surfaces_loud() {
+        struct Failing;
+        impl std::io::Read for Failing {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("boom"))
+            }
+        }
+        impl std::io::Seek for Failing {
+            fn seek(&mut self, _: std::io::SeekFrom) -> std::io::Result<u64> {
+                Ok(0)
+            }
+        }
+        assert!(matches!(
+            FatFs::open(Failing),
+            Err(crate::FatError::Io { .. })
+        ));
     }
 }
