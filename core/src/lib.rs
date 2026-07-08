@@ -14,5 +14,6 @@ mod bytes;
 mod dirent;
 mod fat;
 mod error;
+mod fs;
 
 pub use error::{FatError, Result};
