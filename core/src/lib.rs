@@ -11,6 +11,7 @@
 
 mod boot;
 mod bytes;
+mod fat;
 mod error;
 
 pub use error::{FatError, Result};
