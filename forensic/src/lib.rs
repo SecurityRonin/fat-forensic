@@ -402,3 +402,72 @@ fn read_upto<R: Read + Seek>(
     }
     Ok(filled)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Anomaly, AnomalyKind};
+    use forensicnomicon::report::{Category, Observation, Severity};
+
+    /// One representative of each kind, so every severity/code/category/note/
+    /// evidence branch is exercised.
+    fn one_of_each() -> Vec<AnomalyKind> {
+        vec![
+            AnomalyKind::BootSignatureInvalid { found: 0x0000 },
+            AnomalyKind::BpbInvalid {
+                detail: "sectors-per-cluster is 0".into(),
+            },
+            AnomalyKind::FatMirrorMismatch {
+                fat_offset: 8,
+                fat1: 0x03,
+                fat2: 0x00,
+                differing_bytes: 1,
+            },
+            AnomalyKind::ExfatBootChecksumMismatch {
+                computed: 0x1111_2222,
+                stored: 0x3333_4444,
+            },
+            AnomalyKind::DeletedDirectoryEntry {
+                name: "?ELLO.TXT".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn every_kind_grades_consistently() {
+        for kind in one_of_each() {
+            let a = Anomaly::new(kind.clone());
+            // Derived fields cannot drift from the kind.
+            assert_eq!(a.code, kind.code());
+            assert_eq!(a.severity, kind.severity());
+            assert_eq!(a.note, kind.note());
+            assert_eq!(a.kind, kind);
+            // Observation surface.
+            assert_eq!(Observation::severity(&a), Some(kind.severity()));
+            assert_eq!(Observation::code(&a), kind.code());
+            assert_eq!(Observation::category(&a), kind.category());
+            assert!(!Observation::note(&a).is_empty());
+            assert!(!Observation::evidence(&a).is_empty());
+            assert!(a.code.starts_with("FAT-") || a.code.starts_with("EXFAT-"));
+        }
+    }
+
+    #[test]
+    fn severities_and_categories_are_as_specified() {
+        let sig = AnomalyKind::BootSignatureInvalid { found: 0 };
+        assert_eq!(sig.severity(), Severity::High);
+        assert_eq!(sig.category(), Category::Structure);
+
+        let mirror = AnomalyKind::FatMirrorMismatch {
+            fat_offset: 0,
+            fat1: 1,
+            fat2: 2,
+            differing_bytes: 1,
+        };
+        assert_eq!(mirror.severity(), Severity::Medium);
+        assert_eq!(mirror.category(), Category::Integrity);
+
+        let del = AnomalyKind::DeletedDirectoryEntry { name: "x".into() };
+        assert_eq!(del.severity(), Severity::Info);
+        assert_eq!(del.category(), Category::Residue);
+    }
+}
