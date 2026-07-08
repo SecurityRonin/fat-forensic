@@ -12,6 +12,7 @@
 mod boot;
 mod bytes;
 mod dirent;
+mod exfat;
 mod fat;
 mod error;
 mod fs;
