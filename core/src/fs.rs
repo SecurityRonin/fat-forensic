@@ -9,6 +9,7 @@ use crate::boot::{FatVariant, Geometry};
 use crate::dirent::{parse_directory, DirEntry};
 use crate::error::{FatError, Result};
 use crate::fat::follow_chain;
+use crate::time::{decode as decode_time, FatTimestamp};
 
 /// Cap on bytes materialized for one directory (defends against a lying chain).
 const MAX_DIR_BYTES: usize = 64 * 1024 * 1024;
@@ -55,6 +56,12 @@ pub struct Node {
     pub attributes: u8,
     /// First cluster of the node's data (0 = empty).
     pub first_cluster: u32,
+    /// Decoded creation timestamp (local time), if set.
+    pub created: Option<FatTimestamp>,
+    /// Decoded last-modified timestamp (local time), if set.
+    pub modified: Option<FatTimestamp>,
+    /// Decoded last-access timestamp (date only; local time), if set.
+    pub accessed: Option<FatTimestamp>,
 }
 
 /// Where a directory's raw bytes live.
@@ -313,6 +320,9 @@ fn root_node() -> Node {
         size: 0,
         attributes: crate::dirent::ATTR_DIRECTORY,
         first_cluster: 0,
+        created: None,
+        modified: None,
+        accessed: None,
     }
 }
 
@@ -331,6 +341,9 @@ fn node_from(marker: u32, e: DirEntry) -> Node {
         size: u64::from(e.size),
         attributes: e.attributes,
         first_cluster: e.first_cluster,
+        created: decode_time(e.created.0, e.created.1, e.created.2),
+        modified: decode_time(e.modified.0, e.modified.1, 0),
+        accessed: decode_time(e.accessed, 0, 0),
     }
 }
 

@@ -25,6 +25,7 @@ fn assert_known_files(img: &[u8], hello: &[u8], long_name: &str, long: &[u8], ne
         .expect("HELLO.TXT present");
     let meta = fs.meta(id).unwrap();
     assert_eq!(meta.size as usize, hello.len(), "HELLO.TXT size");
+    assert!(meta.modified.is_some(), "HELLO.TXT has a modified time");
     let mut buf = vec![0u8; hello.len()];
     let n = fs.read_at(id, 0, &mut buf).unwrap();
     assert_eq!(&buf[..n], hello, "HELLO.TXT content");
