@@ -16,6 +16,8 @@ mod fat;
 mod error;
 mod fs;
 mod time;
+#[cfg(feature = "vfs")]
+mod vfs;
 
 pub use boot::FatVariant;
 pub use error::{FatError, Result};
