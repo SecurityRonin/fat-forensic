@@ -18,6 +18,6 @@ mod vfs;
 
 pub use boot::{FatVariant, Geometry};
 pub use error::{FatError, Result};
-pub use exfat::boot_checksum;
+pub use exfat::{boot_checksum, parse_boot as parse_exfat_boot};
 pub use fs::{FatFs, FileId, Node};
 pub use time::FatTimestamp;
