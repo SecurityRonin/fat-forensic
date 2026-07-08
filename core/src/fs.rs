@@ -117,6 +117,42 @@ impl<R: Read + Seek> FatFs<R> {
         self.geom.variant
     }
 
+    /// Resolved geometry (crate-internal; used by the vfs adapter).
+    pub(crate) fn geometry(&self) -> &Geometry {
+        &self.geom
+    }
+
+    /// Contiguous image byte runs backing node `id`'s data, merging physically
+    /// adjacent clusters. The FAT12/16 fixed root is a single region run.
+    pub(crate) fn runs(&self, id: FileId) -> Result<Vec<(u64, u64)>> {
+        let (chain, total) = self.data_extent(id)?;
+        if chain.is_empty() {
+            return Ok(if total == 0 {
+                Vec::new()
+            } else {
+                vec![(self.geom.root_dir_start, total)]
+            });
+        }
+        let cluster_size = u64::from(self.geom.cluster_size);
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        let mut remaining = total;
+        for &c in &chain {
+            if remaining == 0 {
+                break;
+            }
+            let Some(off) = self.geom.cluster_offset(c) else {
+                break; // cov:unreachable: chain clusters are >= 2 by construction
+            };
+            let len = cluster_size.min(remaining);
+            remaining -= len;
+            match runs.last_mut() {
+                Some(last) if last.0 + last.1 == off => last.1 += len,
+                _ => runs.push((off, len)),
+            }
+        }
+        Ok(runs)
+    }
+
     /// The root directory handle.
     pub fn root(&self) -> FileId {
         FileId::Root
