@@ -10,10 +10,10 @@ license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/fat-forensic"
 
 [workspace.dependencies]
-fat-core = { path = "core", version = "0.1.0" }
+fat-core = { path = "core", version = "0.1.1" }
 fat-forensic = { path = "forensic", version = "0.1.0" }
 forensicnomicon = "1"
-forensic-vfs = "0.1"
+forensic-vfs = "0.3"
 thiserror = "2"
 
 [workspace.lints.rust]

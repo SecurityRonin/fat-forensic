@@ -101,8 +101,8 @@ fn to_ts(ts: FatTimestamp, resolution: TimeResolution) -> TimeStamp {
 impl<R: Read + Seek + Send> FileSystem for FatFs<R> {
     fn kind(&self) -> FsKind {
         match self.variant() {
-            FatVariant::ExFat => FsKind::ExFat,
-            _ => FsKind::Fat,
+            FatVariant::ExFat => FsKind::EXFAT,
+            _ => FsKind::FAT,
         }
     }
 
@@ -246,7 +246,7 @@ mod tests {
     fn kind_and_zone() {
         let fs = open();
         let vfs: &dyn FileSystem = &fs;
-        assert_eq!(vfs.kind(), FsKind::Fat);
+        assert_eq!(vfs.kind(), FsKind::FAT);
         assert_eq!(vfs.timestamp_zone(), TimeZonePolicy::LocalUnknown);
     }
 
@@ -255,7 +255,7 @@ mod tests {
         let img = include_bytes!("../../tests/data/exfat.img").to_vec();
         let fs = FatFs::open(Cursor::new(img)).unwrap();
         let vfs: &dyn FileSystem = &fs;
-        assert_eq!(vfs.kind(), FsKind::ExFat);
+        assert_eq!(vfs.kind(), FsKind::EXFAT);
         let id = vfs.lookup(vfs.root(), b"HELLO.TXT").unwrap().unwrap();
         let mut buf = vec![0u8; 17];
         let n = vfs.read_at(id, StreamId::Default, 0, &mut buf).unwrap();
