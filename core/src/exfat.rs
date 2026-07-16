@@ -1,5 +1,5 @@
 //! exFAT reader primitives: the main boot-sector parse, the boot-region
-//! checksum ([MS] §3.4), and the typed 32-byte directory-entry-set decode
+//! checksum (\[MS\] §3.4), and the typed 32-byte directory-entry-set decode
 //! (File 0x85 + Stream Extension 0xC0 + File Name 0xC1).
 //!
 //! exFAT is architecturally distinct from FAT12/16/32: the allocation bitmap —
@@ -12,7 +12,7 @@ use crate::bytes::{le_u16, le_u32, le_u64, u8_at};
 use crate::error::{FatError, Result};
 use crate::time::{decode as decode_time, FatTimestamp};
 
-/// exFAT `FileAttributes` directory bit ([MS] §7.4.4).
+/// exFAT `FileAttributes` directory bit (\[MS\] §7.4.4).
 const ATTR_DIRECTORY: u16 = 0x0010;
 
 /// Entry-type base values (after masking off the 0x80 in-use bit).
@@ -204,7 +204,7 @@ pub fn parse_boot(boot: &[u8]) -> Result<Geometry> {
 
 /// The four-byte boot-region checksum over the first 11 sectors, excluding the
 /// `VolumeFlags` (offsets 106, 107) and `PercentInUse` (offset 112) fields
-/// ([MS] §3.4). A mismatch against the stored checksum is a tamper signal.
+/// (\[MS\] §3.4). A mismatch against the stored checksum is a tamper signal.
 pub fn boot_checksum(sectors: &[u8], bytes_per_sector: u32) -> u32 {
     let n = (bytes_per_sector as usize)
         .saturating_mul(11)

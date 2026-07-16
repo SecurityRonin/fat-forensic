@@ -19,7 +19,7 @@ pub enum FatVariant {
     Fat16,
     /// 32-bit cluster indices.
     Fat32,
-    /// exFAT (parsed by [`crate::exfat`], not the BPB path).
+    /// exFAT (parsed by the exFAT boot path, not the BPB path).
     ExFat,
 }
 

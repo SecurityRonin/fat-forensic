@@ -26,7 +26,7 @@ pub enum FileId {
     /// The volume root directory.
     Root,
     /// A directory entry: `dir_cluster` is the parent directory's first cluster
-    /// (or [`FIXED_ROOT`] for the FAT12/16 fixed root), `index` the slot.
+    /// (or `FIXED_ROOT` for the FAT12/16 fixed root), `index` the slot.
     Entry {
         /// First cluster of the parent directory (or the fixed-root marker).
         dir_cluster: u32,

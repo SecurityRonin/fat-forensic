@@ -57,7 +57,7 @@ pub enum AnomalyKind {
     /// The exFAT boot-region checksum does not match the recomputed value —
     /// consistent with a modified boot region.
     ExfatBootChecksumMismatch {
-        /// Checksum recomputed over the first 11 sectors ([MS] §3.4).
+        /// Checksum recomputed over the first 11 sectors (\[MS\] §3.4).
         computed: u32,
         /// Checksum stored in the checksum sector.
         stored: u32,
