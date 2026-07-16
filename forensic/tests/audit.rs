@@ -74,6 +74,18 @@ fn detects_fat_mirror_mismatch() {
 }
 
 #[test]
+fn single_fat_volume_skips_the_mirror_check() {
+    // A valid non-exFAT volume with num_fats == 1 (BPB 0x10): there is no
+    // second FAT to compare, so neither audit branch runs and no mirror
+    // anomaly is raised. Exercises the if/else-if fall-through.
+    let mut img = include_bytes!("../../tests/data/fat16.img").to_vec();
+    img[16] = 1; // num FATs: 2 -> 1
+    let anoms = audit_reader(Cursor::new(img)).unwrap();
+    assert!(!has_code(&anoms, "FAT-MIRROR-MISMATCH"));
+    assert!(!has_code(&anoms, "FAT-BPB-INVALID"));
+}
+
+#[test]
 fn detects_exfat_boot_checksum_mismatch() {
     let mut img = include_bytes!("../../tests/data/exfat.img").to_vec();
     // VolumeSerialNumber (offset 100): checksummed, not excluded (106/107/112),
