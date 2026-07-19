@@ -10,8 +10,8 @@ license = "Apache-2.0"
 repository = "https://github.com/SecurityRonin/fat-forensic"
 
 [workspace.dependencies]
-fat-core = { path = "core", version = "0.1.1" }
-fat-forensic = { path = "forensic", version = "0.1.0" }
+fat-core = { path = "core", version = "0.1.3" }
+fat-forensic = { path = "forensic", version = "0.1.1" }
 forensicnomicon = "1"
 forensic-vfs = "0.5"
 thiserror = "2"
