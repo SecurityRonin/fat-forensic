@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "fat-forensic"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fat-core",
  "forensicnomicon",
