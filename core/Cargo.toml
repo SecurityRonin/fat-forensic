@@ -16,7 +16,7 @@ name = "fat"
 
 [dependencies]
 thiserror = { workspace = true }
-forensic-vfs = { workspace = true, optional = true }
+forensic-vfs = { version = "0.10", optional = true }
 
 [features]
 default = []
