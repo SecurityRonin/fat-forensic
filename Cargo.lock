@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "fat-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "forensic-vfs",
  "thiserror",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "fat-forensic"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "fat-core",
  "forensicnomicon",
