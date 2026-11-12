@@ -1,5 +1,8 @@
 //! Forensic FAT/exFAT anomaly auditor.
 //!
+//! Public items here take or return `fat` types (`FatError` in `audit_path`/`audit_reader`), so `fat-core` is a
+//! public dependency: an incompatible `fat-core` changes this crate's API as well.
+//!
 //! Surfaces structural and integrity anomalies a happy-path reader would
 //! normalize away: an invalid boot signature / BPB, a FAT1 vs FAT2 mirror
 //! disagreement, an exFAT boot-region checksum mismatch, and the presence of
